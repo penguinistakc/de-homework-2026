@@ -1,3 +1,9 @@
+-- CREATE OR REPLACE EXTERNAL TABLE `taxi-rides-ny.nytaxi.external_yellow_tripdata`
+-- OPTIONS (
+--   format = 'PARQUET',
+--   uris = ['gs://bootcamp-1523720497322-nyc-taxi/*.parquet']
+-- );
+
 -- CREATE OR REPLACE table nyc_taxi.yellow_tripdata_2024 AS
 -- select * from `nyc_taxi.yellow_tripdata_2024_external`;
 
