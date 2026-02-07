@@ -4,4 +4,8 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "dbt-duckdb>=1.10.0",
+    "duckdb>=1.4.4",
+    "requests>=2.32.5",
+]
