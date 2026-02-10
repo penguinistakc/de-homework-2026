@@ -68,3 +68,4 @@ hypothesis/
 Thumbs.db
 
 # ... existing code ...
+*.parquet
