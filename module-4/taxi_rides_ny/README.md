@@ -48,21 +48,19 @@ The `download_data.py` script downloads taxi trip data from the DataTalksClub Gi
 
 ### Download Configuration
 
-Configure which files to download in `download_config.yml`:
+Configure which files to download in `download_config.yml`. Each entry in the `datasets` list expands its own cartesian product of `taxi_types × years × months`. Duplicates across groups are removed automatically.
 
 ```yaml
-taxi_types:
-  - yellow
-  - green
-
-years:
-  - 2019
-  - 2020
-
-months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+datasets:
+  - taxi_types: [yellow, green]
+    years: [2019, 2020]
+    months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+  - taxi_types: [fhv]
+    years: [2019]
+    months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 ```
 
-The cartesian product of these lists determines the full file set (48 files by default).
+This downloads yellow/green for 2019-2020 (48 files) and fhv for 2019 only (12 files) — 60 files total. CLI args (`--taxi-type`, `--year`, `--month`) act as filters on the expanded list rather than overrides.
 
 ### Download Commands
 
@@ -73,10 +71,10 @@ uv run python download_data.py
 # Preview what would be downloaded
 uv run python download_data.py --dry-run
 
-# Download only green taxi data for 2020
+# Filter to green taxi data for 2020
 uv run python download_data.py --taxi-type green --year 2020
 
-# Download a single file
+# Filter to a single file
 uv run python download_data.py --taxi-type green --year 2020 --month 6
 
 # Re-download all files, even if they already exist

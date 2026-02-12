@@ -23,9 +23,28 @@ from download_data import (
 # ---------------------------------------------------------------------------
 
 MINIMAL_CONFIG = {
-    "taxi_types": ["yellow", "green"],
-    "years": [2019, 2020],
-    "months": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    "datasets": [
+        {
+            "taxi_types": ["yellow", "green"],
+            "years": [2019, 2020],
+            "months": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        },
+    ],
+}
+
+MULTI_GROUP_CONFIG = {
+    "datasets": [
+        {
+            "taxi_types": ["yellow", "green"],
+            "years": [2019, 2020],
+            "months": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        },
+        {
+            "taxi_types": ["fhv"],
+            "years": [2019],
+            "months": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        },
+    ],
 }
 
 
@@ -35,26 +54,51 @@ MINIMAL_CONFIG = {
 
 
 class TestValidateConfig:
-    def test_valid_config_passes(self):
+    def test_valid_single_group(self):
         validate_config(MINIMAL_CONFIG)  # should not raise
 
-    def test_unknown_taxi_type_raises(self):
-        config = {**MINIMAL_CONFIG, "taxi_types": ["red"]}
+    def test_valid_multi_group(self):
+        validate_config(MULTI_GROUP_CONFIG)  # should not raise
+
+    def test_missing_datasets_key(self):
+        with pytest.raises(SystemExit):
+            validate_config({"taxi_types": ["yellow"]})
+
+    def test_datasets_empty_list(self):
+        with pytest.raises(SystemExit):
+            validate_config({"datasets": []})
+
+    def test_datasets_not_a_list(self):
+        with pytest.raises(SystemExit):
+            validate_config({"datasets": "yellow"})
+
+    def test_unknown_taxi_type_in_group(self):
+        config = {"datasets": [{"taxi_types": ["red"], "years": [2019], "months": [1]}]}
         with pytest.raises(SystemExit):
             validate_config(config)
 
-    def test_year_out_of_range_raises(self):
-        config = {**MINIMAL_CONFIG, "years": [1999]}
+    def test_bad_year_in_group(self):
+        config = {"datasets": [{"taxi_types": ["yellow"], "years": [1999], "months": [1]}]}
         with pytest.raises(SystemExit):
             validate_config(config)
 
-    def test_month_out_of_range_raises(self):
-        config = {**MINIMAL_CONFIG, "months": [0]}
+    def test_bad_month_in_group(self):
+        config = {"datasets": [{"taxi_types": ["yellow"], "years": [2019], "months": [0]}]}
         with pytest.raises(SystemExit):
             validate_config(config)
 
-    def test_multiple_errors_reported_together(self, capsys):
-        config = {"taxi_types": ["red"], "years": [1999], "months": [13]}
+    def test_missing_key_in_group(self):
+        config = {"datasets": [{"taxi_types": ["yellow"], "years": [2019]}]}
+        with pytest.raises(SystemExit):
+            validate_config(config)
+
+    def test_errors_across_multiple_groups(self):
+        config = {
+            "datasets": [
+                {"taxi_types": ["red"], "years": [2019], "months": [1]},
+                {"taxi_types": ["yellow"], "years": [1999], "months": [1]},
+            ]
+        }
         with pytest.raises(SystemExit):
             validate_config(config)
 
@@ -65,41 +109,54 @@ class TestValidateConfig:
 
 
 class TestBuildFileList:
-    def test_no_filters_returns_full_cartesian_product(self):
+    def test_single_group_full_product(self):
         result = build_file_list(MINIMAL_CONFIG)
-        assert len(result) == 2 * 2 * 12  # 2 types × 2 years × 12 months
+        assert len(result) == 2 * 2 * 12  # 2 types x 2 years x 12 months = 48
 
-    def test_filter_by_taxi_type(self):
-        result = build_file_list(MINIMAL_CONFIG, taxi_type="green")
-        assert all(t == "green" for t, _, _ in result)
-        assert len(result) == 2 * 12  # 2 years × 12 months
+    def test_multi_group(self):
+        result = build_file_list(MULTI_GROUP_CONFIG)
+        assert len(result) == 48 + 12  # 48 yellow/green + 12 fhv = 60
+
+    def test_deduplication_across_groups(self):
+        config = {
+            "datasets": [
+                {"taxi_types": ["yellow"], "years": [2019], "months": [1, 2]},
+                {"taxi_types": ["yellow"], "years": [2019], "months": [2, 3]},
+            ]
+        }
+        result = build_file_list(config)
+        # month 2 appears in both groups but should only appear once
+        assert len(result) == 3
+        assert result == [("yellow", 2019, 1), ("yellow", 2019, 2), ("yellow", 2019, 3)]
+
+    def test_filter_by_type(self):
+        result = build_file_list(MULTI_GROUP_CONFIG, taxi_type="fhv")
+        assert len(result) == 12
+        assert all(t == "fhv" for t, _, _ in result)
 
     def test_filter_by_year(self):
-        result = build_file_list(MINIMAL_CONFIG, year=2020)
+        result = build_file_list(MULTI_GROUP_CONFIG, year=2020)
+        # Only yellow/green have 2020; fhv only has 2019
+        assert len(result) == 2 * 12  # 24
         assert all(y == 2020 for _, y, _ in result)
-        assert len(result) == 2 * 12  # 2 types × 12 months
 
     def test_filter_by_month(self):
-        result = build_file_list(MINIMAL_CONFIG, month=6)
+        result = build_file_list(MULTI_GROUP_CONFIG, month=6)
+        # yellow 2019-06, yellow 2020-06, green 2019-06, green 2020-06, fhv 2019-06
+        assert len(result) == 5
         assert all(m == 6 for _, _, m in result)
-        assert len(result) == 2 * 2  # 2 types × 2 years
 
     def test_all_filters_single_file(self):
-        result = build_file_list(MINIMAL_CONFIG, taxi_type="yellow", year=2019, month=1)
+        result = build_file_list(MULTI_GROUP_CONFIG, taxi_type="yellow", year=2019, month=1)
         assert result == [("yellow", 2019, 1)]
 
-    def test_filter_value_not_in_config_returns_empty(self):
-        result = build_file_list(MINIMAL_CONFIG, taxi_type="fhv")
-        # fhv is not in config's taxi_types list, but build_file_list uses
-        # the CLI filter directly — it returns fhv combined with config years/months
-        # This is by design: CLI filter overrides the config list
-        assert all(t == "fhv" for t, _, _ in result)
-        assert len(result) == 2 * 12
+    def test_filter_not_in_any_group_returns_empty(self):
+        result = build_file_list(MULTI_GROUP_CONFIG, taxi_type="fhvhv")
+        assert result == []
 
-    def test_filter_year_not_in_config(self):
-        result = build_file_list(MINIMAL_CONFIG, year=2025)
-        assert all(y == 2025 for _, y, _ in result)
-        assert len(result) == 2 * 12
+    def test_sorted_output(self):
+        result = build_file_list(MULTI_GROUP_CONFIG)
+        assert result == sorted(result)
 
 
 # ---------------------------------------------------------------------------
@@ -110,9 +167,16 @@ class TestBuildFileList:
 class TestLoadConfig:
     def test_loads_valid_yaml(self, tmp_path):
         config_file = tmp_path / "config.yml"
-        config_file.write_text("taxi_types:\n  - yellow\nyears:\n  - 2020\nmonths: [1]\n")
+        config_file.write_text(
+            "datasets:\n"
+            "  - taxi_types: [yellow]\n"
+            "    years: [2020]\n"
+            "    months: [1]\n"
+        )
         result = load_config(str(config_file))
-        assert result == {"taxi_types": ["yellow"], "years": [2020], "months": [1]}
+        assert result == {
+            "datasets": [{"taxi_types": ["yellow"], "years": [2020], "months": [1]}]
+        }
 
     def test_missing_file_raises(self):
         with pytest.raises(FileNotFoundError):
@@ -176,6 +240,16 @@ class TestParseArgs:
         with pytest.raises(SystemExit):
             parse_args()
 
+    def test_fhv_taxi_type_accepted(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["download_data.py", "--taxi-type", "fhv"])
+        args = parse_args()
+        assert args.taxi_type == "fhv"
+
+    def test_fhvhv_taxi_type_accepted(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["download_data.py", "--taxi-type", "fhvhv"])
+        args = parse_args()
+        assert args.taxi_type == "fhvhv"
+
 
 # ---------------------------------------------------------------------------
 # get_github_headers
@@ -223,7 +297,7 @@ class TestUpdateGitignore:
 
 
 # ---------------------------------------------------------------------------
-# download_all_files — abort after MAX_CONSECUTIVE_FAILURES
+# categorize_files
 # ---------------------------------------------------------------------------
 
 

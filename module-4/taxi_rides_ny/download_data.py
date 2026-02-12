@@ -200,7 +200,7 @@ async def download_all_files(
     return successful_paths
 
 
-def load_into_duckdb(db_path: str = "taxi_rides_ny.duckdb") -> None:
+def load_into_duckdb(taxi_types: list[str], db_path: str = "taxi_rides_ny.duckdb") -> None:
     """Load all parquet files into DuckDB."""
     console.print(f"\n[bold]Loading data into {db_path}...[/bold]")
 
@@ -208,7 +208,7 @@ def load_into_duckdb(db_path: str = "taxi_rides_ny.duckdb") -> None:
     try:
         con.execute("CREATE SCHEMA IF NOT EXISTS prod")
 
-        for taxi_type in ["yellow", "green"]:
+        for taxi_type in taxi_types:
             data_dir = Path("data") / taxi_type
             if not data_dir.exists():
                 continue
@@ -251,20 +251,39 @@ def validate_config(config: dict) -> None:
     """Validate config values and exit with an error if invalid."""
     errors = []
 
-    unknown_types = set(config["taxi_types"]) - KNOWN_TAXI_TYPES
-    if unknown_types:
-        errors.append(
-            f"Unknown taxi type(s): {', '.join(sorted(unknown_types))}. "
-            f"Valid types: {', '.join(sorted(KNOWN_TAXI_TYPES))}"
-        )
+    if "datasets" not in config:
+        errors.append("Config must contain a 'datasets' key")
+    elif not isinstance(config["datasets"], list):
+        errors.append("'datasets' must be a list")
+    elif len(config["datasets"]) == 0:
+        errors.append("'datasets' must not be empty")
+    else:
+        for i, group in enumerate(config["datasets"], start=1):
+            prefix = f"Dataset {i}"
 
-    for year in config["years"]:
-        if not (2009 <= year <= 2030):
-            errors.append(f"Year {year} is outside the valid range (2009-2030)")
+            for key in ("taxi_types", "years", "months"):
+                if key not in group:
+                    errors.append(f"{prefix}: missing required key '{key}'")
+                elif not isinstance(group[key], list) or len(group[key]) == 0:
+                    errors.append(f"{prefix}: '{key}' must be a non-empty list")
 
-    for month in config["months"]:
-        if not (1 <= month <= 12):
-            errors.append(f"Month {month} is outside the valid range (1-12)")
+            if "taxi_types" in group and isinstance(group["taxi_types"], list):
+                unknown = set(group["taxi_types"]) - KNOWN_TAXI_TYPES
+                if unknown:
+                    errors.append(
+                        f"{prefix}: unknown taxi type(s): {', '.join(sorted(unknown))}. "
+                        f"Valid types: {', '.join(sorted(KNOWN_TAXI_TYPES))}"
+                    )
+
+            if "years" in group and isinstance(group["years"], list):
+                for year in group["years"]:
+                    if not (2009 <= year <= 2030):
+                        errors.append(f"{prefix}: year {year} is outside the valid range (2009-2030)")
+
+            if "months" in group and isinstance(group["months"], list):
+                for month in group["months"]:
+                    if not (1 <= month <= 12):
+                        errors.append(f"{prefix}: month {month} is outside the valid range (1-12)")
 
     if errors:
         console.print("[red bold]Config validation failed:[/red bold]")
@@ -280,16 +299,21 @@ def build_file_list(
     month: int | None = None,
 ) -> list[tuple[str, int, int]]:
     """Build the list of files to download from config, filtered by CLI args."""
-    taxi_types = [taxi_type] if taxi_type else config["taxi_types"]
-    years = [year] if year else config["years"]
-    months = [month] if month else config["months"]
+    all_files: set[tuple[str, int, int]] = set()
+    for group in config["datasets"]:
+        for t in group["taxi_types"]:
+            for y in group["years"]:
+                for m in group["months"]:
+                    all_files.add((t, y, m))
 
-    return [
-        (t, y, m)
-        for t in taxi_types
-        for y in years
-        for m in months
-    ]
+    if taxi_type:
+        all_files = {f for f in all_files if f[0] == taxi_type}
+    if year:
+        all_files = {f for f in all_files if f[1] == year}
+    if month:
+        all_files = {f for f in all_files if f[2] == month}
+
+    return sorted(all_files)
 
 
 def categorize_files(
@@ -316,20 +340,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--taxi-type",
-        choices=["yellow", "green"],
-        help="Download only this taxi type",
+        choices=sorted(KNOWN_TAXI_TYPES),
+        help="Filter to this taxi type",
     )
     parser.add_argument(
         "--year",
         type=int,
-        help="Download only this year (e.g. 2020)",
+        help="Filter to this year (e.g. 2020)",
     )
     parser.add_argument(
         "--month",
         type=int,
         choices=range(1, 13),
         metavar="{1-12}",
-        help="Download only this month (1-12)",
+        help="Filter to this month (1-12)",
     )
     parser.add_argument(
         "--no-load",
@@ -390,7 +414,8 @@ async def main() -> None:
     await download_all_files(files_to_download, force=args.force)
 
     if not args.no_load:
-        load_into_duckdb()
+        taxi_types = sorted({t for g in config["datasets"] for t in g["taxi_types"]})
+        load_into_duckdb(taxi_types)
 
     console.print("\n[bold green]Done![/bold green]")
 
