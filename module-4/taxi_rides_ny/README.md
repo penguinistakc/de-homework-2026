@@ -2,6 +2,41 @@
 
 A dbt project for analyzing NYC yellow and green taxi trip data (2019-2020). Uses DuckDB for local development and supports BigQuery for production. Follows a medallion architecture pattern (staging, intermediate, marts) with a star schema output.
 
+## "Show your work" queries for homework
+```sql
+select count(*) from prod.fct_monthly_zone_revenue;
+
+select
+    f.pickup_zone,
+    d.zone,
+    sum(f.revenue_monthly_total_amount) as annual_revenue
+from
+    prod.fct_monthly_zone_revenue f
+    join prod.dim_zones d on f.pickup_zone = d.zone
+where
+    year(f.revenue_month) = 2020
+    and
+    f.pickup_zone in ('East Harlem North','East Harlem South','Morningside Heights','Washington Heights')
+    and
+    f.service_type = 'Green'
+group by f.pickup_zone, d.zone
+order by sum(f.revenue_monthly_total_amount) desc;
+
+select
+    sum(total_monthly_trips)
+from
+    prod.fct_monthly_zone_revenue
+where
+    revenue_month = '2019-10-01'
+    and
+    service_type = 'Green';
+
+SELECT count(*) as total_rows FROM prod.stg_fhv_tripdata;
+
+
+
+
+```
 ## Prerequisites
 
 - Python 3.13+
