@@ -86,6 +86,7 @@ async def download_and_convert(
     year: int,
     month: int,
     progress: Progress,
+    force: bool = False,
 ) -> Path | None:
     """Download a single file and convert it to Parquet."""
     data_dir = Path("data") / taxi_type
@@ -95,8 +96,12 @@ async def download_and_convert(
     parquet_path = data_dir / parquet_filename
 
     if parquet_path.exists():
-        progress.console.print(f"[dim]Skipping {parquet_filename} (already exists)[/dim]")
-        return parquet_path
+        if force:
+            parquet_path.unlink()
+            progress.console.print(f"[yellow]Re-downloading {parquet_filename} (--force)[/yellow]")
+        else:
+            progress.console.print(f"[dim]Skipping {parquet_filename} (already exists)[/dim]")
+            return parquet_path
 
     csv_gz_filename = f"{taxi_type}_tripdata_{year}-{month:02d}.csv.gz"
     csv_gz_path = data_dir / csv_gz_filename
@@ -133,7 +138,9 @@ async def download_and_convert(
         raise
 
 
-async def download_all_files(files_to_download: list[tuple[str, int, int]]) -> list[Path]:
+async def download_all_files(
+    files_to_download: list[tuple[str, int, int]], force: bool = False
+) -> list[Path]:
     """Download all taxi data files concurrently."""
     headers = get_github_headers()
     semaphore = asyncio.Semaphore(CONCURRENT_DOWNLOADS)
@@ -163,7 +170,7 @@ async def download_all_files(files_to_download: list[tuple[str, int, int]]) -> l
                             return None
                         try:
                             result = await download_and_convert(
-                                client, executor, taxi_type, year, month, progress
+                                client, executor, taxi_type, year, month, progress, force=force
                             )
                             consecutive_failures = 0
                             return result
@@ -285,6 +292,18 @@ def build_file_list(
     ]
 
 
+def categorize_files(
+    files: list[tuple[str, int, int]],
+) -> tuple[list[tuple[str, int, int]], list[tuple[str, int, int]]]:
+    """Split file list into (new, existing) based on whether parquet files exist on disk."""
+    new, existing = [], []
+    for entry in files:
+        taxi_type, year, month = entry
+        parquet_path = Path("data") / taxi_type / f"{taxi_type}_tripdata_{year}-{month:02d}.parquet"
+        (existing if parquet_path.exists() else new).append(entry)
+    return new, existing
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
@@ -322,6 +341,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Show files that would be downloaded, without downloading",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-download and overwrite existing parquet files",
+    )
     return parser.parse_args()
 
 
@@ -344,13 +368,26 @@ async def main() -> None:
         return
 
     if args.dry_run:
-        console.print(f"\n[bold]Would download {len(files_to_download)} files:[/bold]")
+        new_files, existing_files = categorize_files(files_to_download)
+        new_count = len(new_files)
+        existing_count = len(existing_files)
+        console.print(
+            f"\n[bold]Would download {len(files_to_download)} files "
+            f"({new_count} new, {existing_count} already exist):[/bold]"
+        )
         for taxi_type, year, month in files_to_download:
-            console.print(f"  {taxi_type}_tripdata_{year}-{month:02d}.csv.gz")
+            filename = f"{taxi_type}_tripdata_{year}-{month:02d}.csv.gz"
+            if (taxi_type, year, month) in existing_files:
+                if args.force:
+                    console.print(f"  [yellow]FORCE[/yellow] {filename}  (will re-download)")
+                else:
+                    console.print(f"  [dim]SKIP[/dim]  {filename}  (already exists, use --force to re-download)")
+            else:
+                console.print(f"  [green]NEW[/green]   {filename}")
         return
 
     update_gitignore()
-    await download_all_files(files_to_download)
+    await download_all_files(files_to_download, force=args.force)
 
     if not args.no_load:
         load_into_duckdb()

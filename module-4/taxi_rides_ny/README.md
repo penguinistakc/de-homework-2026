@@ -79,6 +79,9 @@ uv run python download_data.py --taxi-type green --year 2020
 # Download a single file
 uv run python download_data.py --taxi-type green --year 2020 --month 6
 
+# Re-download all files, even if they already exist
+uv run python download_data.py --force
+
 # Download without loading into DuckDB
 uv run python download_data.py --no-load
 
@@ -177,3 +180,27 @@ Tests are defined in `schema.yml` files alongside models:
 - **Accepted values** on categorical fields (`service_type` must be Green or Yellow)
 - **Relationships** for foreign key integrity (pickup/dropoff location IDs reference `dim_zones`)
 - **Unique combination of columns** on `fct_monthly_zone_revenue` (zone + month + service type)
+
+## Testing
+
+Run the `download_data.py` test suite with:
+
+```bash
+uv run pytest -v
+```
+
+### What we test and why
+
+We focus on the **pure logic and input boundaries** — the code we actually wrote:
+
+- **`validate_config`** — Config validation is the most important thing to test: bad input should fail fast with clear errors, and multiple errors should be reported together.
+- **`build_file_list`** — The cartesian product logic that combines config values with CLI filters. Easy to get wrong, cheap to test.
+- **`load_config`** — Basic YAML loading and the missing-file error path.
+- **`parse_args`** — Verifies defaults, flag behavior, type coercion, and that argparse rejects invalid values.
+- **`get_github_headers`** — Tests the env-var boundary: token present vs. absent.
+- **`update_gitignore`** — File creation, append, and no-op cases using pytest's `tmp_path`.
+- **`download_all_files`** — One integration-style test verifying the abort-after-N-consecutive-failures safety net.
+
+### What we skip and why
+
+We deliberately skip thin I/O wrappers like `download_file`, `convert_to_parquet`, and `load_into_duckdb`. These are mostly calls to httpx, DuckDB, and rich — testing them would just be testing mock wiring, not our logic. They are better covered by manual runs and integration tests against real data.
