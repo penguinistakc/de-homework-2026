@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -5,6 +6,8 @@ from pathlib import Path
 
 import duckdb
 import httpx
+import yaml
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -19,6 +22,8 @@ from rich.progress import (
 BASE_URL = "https://github.com/DataTalksClub/nyc-tlc-data/releases/download"
 CONCURRENT_DOWNLOADS = 4
 CHUNK_SIZE = 64 * 1024  # 64KB chunks
+KNOWN_TAXI_TYPES = {"yellow", "green", "fhv", "fhvhv"}
+MAX_CONSECUTIVE_FAILURES = 5
 
 console = Console()
 
@@ -76,7 +81,6 @@ async def download_file(
 
 async def download_and_convert(
     client: httpx.AsyncClient,
-    semaphore: asyncio.Semaphore,
     executor: ThreadPoolExecutor,
     taxi_type: str,
     year: int,
@@ -98,50 +102,43 @@ async def download_and_convert(
     csv_gz_path = data_dir / csv_gz_filename
     url = f"{BASE_URL}/{taxi_type}/{csv_gz_filename}"
 
-    async with semaphore:
-        # Create progress task for this download
-        task_id = progress.add_task(
-            f"[cyan]{csv_gz_filename}",
-            total=None,
-            start=True,
+    # Create progress task for this download
+    task_id = progress.add_task(
+        f"[cyan]{csv_gz_filename}",
+        total=None,
+        start=True,
+    )
+
+    try:
+        await download_file(client, url, csv_gz_path, progress, task_id)
+        progress.update(task_id, description=f"[yellow]{csv_gz_filename} (converting)")
+
+        # Run parquet conversion in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            executor,
+            convert_to_parquet,
+            csv_gz_path,
+            parquet_path,
         )
 
-        try:
-            await download_file(client, url, csv_gz_path, progress, task_id)
-            progress.update(task_id, description=f"[yellow]{csv_gz_filename} (converting)")
+        progress.update(task_id, description=f"[green]{parquet_filename} ✓")
+        return parquet_path
 
-            # Run parquet conversion in thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                executor,
-                convert_to_parquet,
-                csv_gz_path,
-                parquet_path,
-            )
-
-            progress.update(task_id, description=f"[green]{parquet_filename} ✓")
-            return parquet_path
-
-        except httpx.HTTPStatusError as e:
-            progress.update(task_id, description=f"[red]{csv_gz_filename} (failed: {e.response.status_code})")
-            raise
-        except Exception as e:
-            progress.update(task_id, description=f"[red]{csv_gz_filename} (failed)")
-            raise
+    except httpx.HTTPStatusError as e:
+        progress.update(task_id, description=f"[red]{csv_gz_filename} (failed: {e.response.status_code})")
+        raise
+    except Exception:
+        progress.update(task_id, description=f"[red]{csv_gz_filename} (failed)")
+        raise
 
 
-async def download_all_files() -> list[Path]:
+async def download_all_files(files_to_download: list[tuple[str, int, int]]) -> list[Path]:
     """Download all taxi data files concurrently."""
     headers = get_github_headers()
     semaphore = asyncio.Semaphore(CONCURRENT_DOWNLOADS)
-
-    # Create list of all files to download
-    files_to_download = [
-        (taxi_type, year, month)
-        for taxi_type in ["yellow", "green"]
-        for year in [2019, 2020]
-        for month in range(1, 13)
-    ]
+    consecutive_failures = 0
+    aborted = False
 
     console.print(f"\n[bold]Downloading {len(files_to_download)} files...[/bold]\n")
 
@@ -156,13 +153,35 @@ async def download_all_files() -> list[Path]:
                 console=console,
                 transient=False,
             ) as progress:
+
+                async def download_with_tracking(
+                    taxi_type: str, year: int, month: int
+                ) -> Path | Exception | None:
+                    nonlocal consecutive_failures, aborted
+                    async with semaphore:
+                        if aborted:
+                            return None
+                        try:
+                            result = await download_and_convert(
+                                client, executor, taxi_type, year, month, progress
+                            )
+                            consecutive_failures = 0
+                            return result
+                        except Exception as e:
+                            consecutive_failures += 1
+                            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                                aborted = True
+                                progress.console.print(
+                                    f"\n[red bold]Aborting: {consecutive_failures} consecutive "
+                                    f"download failures — check your config[/red bold]"
+                                )
+                            return e
+
                 tasks = [
-                    download_and_convert(
-                        client, semaphore, executor, taxi_type, year, month, progress
-                    )
+                    download_with_tracking(taxi_type, year, month)
                     for taxi_type, year, month in files_to_download
                 ]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
+                results = await asyncio.gather(*tasks)
 
     # Filter out exceptions and None values
     successful_paths = [r for r in results if isinstance(r, Path)]
@@ -215,11 +234,127 @@ def update_gitignore() -> None:
             f.write("\n# Data directory\ndata/\n" if content else "# Data directory\ndata/\n")
 
 
+def load_config(config_path: str) -> dict:
+    """Load download configuration from a YAML file."""
+    with open(config_path) as f:
+        return yaml.safe_load(f)
+
+
+def validate_config(config: dict) -> None:
+    """Validate config values and exit with an error if invalid."""
+    errors = []
+
+    unknown_types = set(config["taxi_types"]) - KNOWN_TAXI_TYPES
+    if unknown_types:
+        errors.append(
+            f"Unknown taxi type(s): {', '.join(sorted(unknown_types))}. "
+            f"Valid types: {', '.join(sorted(KNOWN_TAXI_TYPES))}"
+        )
+
+    for year in config["years"]:
+        if not (2009 <= year <= 2030):
+            errors.append(f"Year {year} is outside the valid range (2009-2030)")
+
+    for month in config["months"]:
+        if not (1 <= month <= 12):
+            errors.append(f"Month {month} is outside the valid range (1-12)")
+
+    if errors:
+        console.print("[red bold]Config validation failed:[/red bold]")
+        for error in errors:
+            console.print(f"  [red]- {error}[/red]")
+        raise SystemExit(1)
+
+
+def build_file_list(
+    config: dict,
+    taxi_type: str | None = None,
+    year: int | None = None,
+    month: int | None = None,
+) -> list[tuple[str, int, int]]:
+    """Build the list of files to download from config, filtered by CLI args."""
+    taxi_types = [taxi_type] if taxi_type else config["taxi_types"]
+    years = [year] if year else config["years"]
+    months = [month] if month else config["months"]
+
+    return [
+        (t, y, m)
+        for t in taxi_types
+        for y in years
+        for m in months
+    ]
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Download NYC taxi trip data and load into DuckDB."
+    )
+    parser.add_argument(
+        "--config",
+        default="download_config.yml",
+        help="Path to YAML config file (default: download_config.yml)",
+    )
+    parser.add_argument(
+        "--taxi-type",
+        choices=["yellow", "green"],
+        help="Download only this taxi type",
+    )
+    parser.add_argument(
+        "--year",
+        type=int,
+        help="Download only this year (e.g. 2020)",
+    )
+    parser.add_argument(
+        "--month",
+        type=int,
+        choices=range(1, 13),
+        metavar="{1-12}",
+        help="Download only this month (1-12)",
+    )
+    parser.add_argument(
+        "--no-load",
+        action="store_true",
+        help="Skip loading data into DuckDB after download",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show files that would be downloaded, without downloading",
+    )
+    return parser.parse_args()
+
+
 async def main() -> None:
     """Main entry point."""
+    load_dotenv()
+    args = parse_args()
+
+    config = load_config(args.config)
+    validate_config(config)
+    files_to_download = build_file_list(
+        config,
+        taxi_type=args.taxi_type,
+        year=args.year,
+        month=args.month,
+    )
+
+    if not files_to_download:
+        console.print("[red]No files to download with the given filters.[/red]")
+        return
+
+    if args.dry_run:
+        console.print(f"\n[bold]Would download {len(files_to_download)} files:[/bold]")
+        for taxi_type, year, month in files_to_download:
+            console.print(f"  {taxi_type}_tripdata_{year}-{month:02d}.csv.gz")
+        return
+
     update_gitignore()
-    await download_all_files()
-    load_into_duckdb()
+    await download_all_files(files_to_download)
+
+    if not args.no_load:
+        load_into_duckdb()
+
     console.print("\n[bold green]Done![/bold green]")
 
 

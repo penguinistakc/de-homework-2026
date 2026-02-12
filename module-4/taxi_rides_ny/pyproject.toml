@@ -8,5 +8,7 @@ dependencies = [
     "dbt-duckdb>=1.10.0",
     "duckdb>=1.4.4",
     "httpx>=0.28.0",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
     "rich>=13.9.0",
 ]
