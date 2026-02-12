@@ -411,7 +411,18 @@ async def main() -> None:
         return
 
     update_gitignore()
-    await download_all_files(files_to_download, force=args.force)
+    if args.force:
+        actual_downloads = files_to_download
+    else:
+        new_files, existing_files = categorize_files(files_to_download)
+        if existing_files:
+            console.print(f"[dim]Skipping {len(existing_files)} files that already exist[/dim]")
+        actual_downloads = new_files
+
+    if not actual_downloads:
+        console.print("[green]All files already downloaded.[/green]")
+    else:
+        await download_all_files(actual_downloads, force=args.force)
 
     if not args.no_load:
         taxi_types = sorted({t for g in config["datasets"] for t in g["taxi_types"]})
