@@ -1,6 +1,6 @@
 # NYC Taxi Rides - dbt Project
 
-Downloads NYC yellow and green taxi trip data (2019-2020) from the DataTalksClub GitHub releases, converts to Parquet, loads into DuckDB, and transforms with dbt.
+A dbt project for analyzing NYC yellow and green taxi trip data (2019-2020). Uses DuckDB for local development and supports BigQuery for production. Follows a medallion architecture pattern (staging, intermediate, marts) with a star schema output.
 
 ## Prerequisites
 
@@ -9,15 +9,13 @@ Downloads NYC yellow and green taxi trip data (2019-2020) from the DataTalksClub
 
 ## Setup
 
-Install dependencies:
-
 ```bash
 uv sync
 ```
 
 ### GitHub Token (optional, recommended)
 
-To avoid GitHub API rate limits, provide a personal access token. Either create a `.env` file:
+To avoid GitHub API rate limits when downloading data, provide a personal access token. Either create a `.env` file:
 
 ```
 GITHUB_TOKEN=ghp_your_token_here
@@ -31,9 +29,26 @@ export GITHUB_TOKEN=ghp_your_token_here
 
 An exported env var takes priority over the `.env` file.
 
-## Configuration
+### dbt Profile
 
-The download is configured via `download_config.yml`:
+Create a `profiles.yml` file in the project root (not committed to git):
+
+```yaml
+taxi_rides_ny:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: taxi_rides_ny.duckdb
+```
+
+## Downloading Data
+
+The `download_data.py` script downloads taxi trip data from the DataTalksClub GitHub releases, converts CSV.gz files to Parquet, and loads them into DuckDB. Downloads run concurrently (4 at a time) with progress bars.
+
+### Download Configuration
+
+Configure which files to download in `download_config.yml`:
 
 ```yaml
 taxi_types:
@@ -47,53 +62,118 @@ years:
 months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 ```
 
-The cartesian product of these lists determines which files are downloaded.
+The cartesian product of these lists determines the full file set (48 files by default).
 
-## Usage
-
-Download all files and load into DuckDB:
+### Download Commands
 
 ```bash
+# Download everything and load into DuckDB
 uv run python download_data.py
-```
 
-Download only green taxi data:
+# Preview what would be downloaded
+uv run python download_data.py --dry-run
 
-```bash
-uv run python download_data.py --taxi-type green
-```
+# Download only green taxi data for 2020
+uv run python download_data.py --taxi-type green --year 2020
 
-Download a single file:
-
-```bash
+# Download a single file
 uv run python download_data.py --taxi-type green --year 2020 --month 6
-```
 
-Download without loading into DuckDB:
-
-```bash
+# Download without loading into DuckDB
 uv run python download_data.py --no-load
-```
 
-Use a custom config file:
-
-```bash
+# Use a custom config file
 uv run python download_data.py --config my_config.yml
 ```
 
-See all options:
+Run `uv run python download_data.py --help` for all options.
+
+## dbt Project
+
+### Running dbt
 
 ```bash
-uv run python download_data.py --help
-```
-
-## dbt Workflow
-
-After downloading data:
-
-```bash
+# Install dbt packages (dbt_utils, codegen)
 uv run dbt deps
+
+# Load seed data (zone lookup, payment type lookup)
 uv run dbt seed
+
+# Run all models
 uv run dbt run
+
+# Run in dev mode (samples data to Jan 2019 only)
+uv run dbt run --target dev
+
+# Run a specific model
+uv run dbt run --select fct_trips
+
+# Run tests
 uv run dbt test
+
+# Generate and serve documentation
+uv run dbt docs generate && uv run dbt docs serve
 ```
+
+### Data Architecture
+
+The project follows a medallion architecture with four layers:
+
+```
+Raw Sources (prod.green_tripdata, prod.yellow_tripdata)
+    |
+Staging ── views, type casting, null filtering
+    |       stg_green_tripdata, stg_yellow_tripdata
+    |
+Intermediate ── union, surrogate keys, deduplication
+    |       int_trips_unioned → int_trips
+    |
+Marts ── star schema fact/dimension tables
+    |       fct_trips, dim_zones, dim_vendors
+    |
+Reporting ── aggregated business metrics
+            fct_monthly_zone_revenue
+```
+
+### Models
+
+**Staging** (materialized as views)
+- `stg_green_tripdata` — Standardizes column names, casts types, filters null vendors. Uses `safe_cast()` macro for BigQuery compatibility.
+- `stg_yellow_tripdata` — Same standardization for yellow taxi data.
+- In dev target, both filter to a configurable date range (default: January 2019).
+
+**Intermediate** (materialized as tables)
+- `int_trips_unioned` — Unions green and yellow staging data, normalizes schema differences (adds `service_type` column, fills green-only fields for yellow).
+- `int_trips` — Generates surrogate `trip_id` key, joins payment type descriptions from seed, deduplicates on natural key.
+
+**Marts** (materialized as tables)
+- `fct_trips` — Core fact table (incremental, merge strategy). Joins zone names/boroughs from `dim_zones`, adds computed `trip_duration_minutes`.
+- `dim_zones` — Zone dimension from `taxi_zone_lookup` seed (265 NYC TLC zones with borough and service zone).
+- `dim_vendors` — Vendor dimension derived from `fct_trips`, maps IDs to names (Creative Mobile Technologies, VeriFone Inc.).
+
+**Reporting**
+- `fct_monthly_zone_revenue` — Monthly revenue aggregation by pickup zone and service type. Includes fare breakdowns, trip counts, and averages.
+
+### Seeds
+
+| File                       | Rows | Description                                              |
+|----------------------------|------|----------------------------------------------------------|
+| `taxi_zone_lookup.csv`     | 265  | NYC TLC zones with borough, zone name, and service zone  |
+| `payment_type_lookup.csv`  | 7    | Payment method codes (credit card, cash, dispute, etc.)  |
+
+### Custom Macros
+
+| Macro                                        | Purpose                                                               |
+|----------------------------------------------|-----------------------------------------------------------------------|
+| `safe_cast(column, type)`                    | Cross-database type casting (BigQuery `safe_cast` vs standard `cast`) |
+| `get_vendor_data(column)`                    | Maps vendor IDs to company names via CASE statement                   |
+| `get_trip_duration_minutes(pickup, dropoff)` | Calculates trip duration in minutes using `datediff`                  |
+
+### Tests
+
+Tests are defined in `schema.yml` files alongside models:
+
+- **Uniqueness and not-null** on primary keys (`trip_id`, `vendor_id`, `location_id`)
+- **Accepted values** on categorical fields (`service_type` must be Green or Yellow)
+- **Relationships** for foreign key integrity (pickup/dropoff location IDs reference `dim_zones`)
+- **Unique combination of columns** on `fct_monthly_zone_revenue` (zone + month + service type)
