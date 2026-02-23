@@ -1,0 +1,6 @@
+.bruin.yml
+logs/runs
+logs/*.logs
+__pycache__/
+*.py[cod]
+logs/queries
