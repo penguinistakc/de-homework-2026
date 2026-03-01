@@ -154,3 +154,10 @@ cython_debug/
 
 # OS-specific files
 .DS_Store
+
+# Downloads
+*.csv
+*.parquet
+
+/.gitignore
+/notebooks/zones/
