@@ -1,0 +1,47 @@
+{
+  "fields": [
+    {
+      "metadata": {},
+      "name": "hvfhs_license_num",
+      "nullable": true,
+      "type": "string"
+    },
+    {
+      "metadata": {},
+      "name": "dispatching_base_num",
+      "nullable": true,
+      "type": "string"
+    },
+    {
+      "metadata": {},
+      "name": "pickup_datetime",
+      "nullable": true,
+      "type": "timestamp"
+    },
+    {
+      "metadata": {},
+      "name": "dropoff_datetime",
+      "nullable": true,
+      "type": "timestamp"
+    },
+    {
+      "metadata": {},
+      "name": "PULocationID",
+      "nullable": true,
+      "type": "integer"
+    },
+    {
+      "metadata": {},
+      "name": "DOLocationID",
+      "nullable": true,
+      "type": "integer"
+    },
+    {
+      "metadata": {},
+      "name": "SR_Flag",
+      "nullable": true,
+      "type": "integer"
+    }
+  ],
+  "type": "struct"
+}
