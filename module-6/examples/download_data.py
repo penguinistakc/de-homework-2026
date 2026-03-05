@@ -87,21 +87,25 @@ async def download_and_convert(
     month: int,
     progress: Progress,
     force: bool = False,
+    raw: bool = False,
 ) -> Path | None:
     """Download a single file and convert it to Parquet."""
-    data_dir = Path("data") / taxi_type
+    if raw:
+        data_dir = Path("data") / "raw" / taxi_type / str(year) / f"{month:02d}"
+    else:
+        data_dir = Path("data") / taxi_type
     data_dir.mkdir(exist_ok=True, parents=True)
 
-    parquet_filename = f"{taxi_type}_tripdata_{year}-{month:02d}.parquet"
-    parquet_path = data_dir / parquet_filename
+    filename = f"{taxi_type}_tripdata_{year}-{month:02d}.{'csv.gz' if raw else 'parquet'}"
+    target_path = data_dir / filename
 
-    if parquet_path.exists():
+    if target_path.exists():
         if force:
-            parquet_path.unlink()
-            progress.console.print(f"[yellow]Re-downloading {parquet_filename} (--force)[/yellow]")
+            target_path.unlink()
+            progress.console.print(f"[yellow]Re-downloading {filename} (--force)[/yellow]")
         else:
-            progress.console.print(f"[dim]Skipping {parquet_filename} (already exists)[/dim]")
-            return parquet_path
+            progress.console.print(f"[dim]Skipping {filename} (already exists)[/dim]")
+            return target_path
 
     csv_gz_filename = f"{taxi_type}_tripdata_{year}-{month:02d}.csv.gz"
     csv_gz_path = data_dir / csv_gz_filename
@@ -116,19 +120,23 @@ async def download_and_convert(
 
     try:
         await download_file(client, url, csv_gz_path, progress, task_id)
-        progress.update(task_id, description=f"[yellow]{csv_gz_filename} (converting)")
 
-        # Run parquet conversion in thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            executor,
-            convert_to_parquet,
-            csv_gz_path,
-            parquet_path,
-        )
+        if not raw:
+            progress.update(task_id, description=f"[yellow]{csv_gz_filename} (converting)")
 
-        progress.update(task_id, description=f"[green]{parquet_filename} ✓")
-        return parquet_path
+            # Run parquet conversion in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                executor,
+                convert_to_parquet,
+                csv_gz_path,
+                target_path,
+            )
+            progress.update(task_id, description=f"[green]{filename} ✓")
+        else:
+            progress.update(task_id, description=f"[green]{filename} ✓")
+
+        return target_path
 
     except httpx.HTTPStatusError as e:
         progress.update(task_id, description=f"[red]{csv_gz_filename} (failed: {e.response.status_code})")
@@ -139,7 +147,7 @@ async def download_and_convert(
 
 
 async def download_all_files(
-    files_to_download: list[tuple[str, int, int]], force: bool = False
+    files_to_download: list[tuple[str, int, int]], force: bool = False, raw: bool = False
 ) -> list[Path]:
     """Download all taxi data files concurrently."""
     headers = get_github_headers()
@@ -170,7 +178,7 @@ async def download_all_files(
                             return None
                         try:
                             result = await download_and_convert(
-                                client, executor, taxi_type, year, month, progress, force=force
+                                client, executor, taxi_type, year, month, progress, force=force, raw=raw
                             )
                             consecutive_failures = 0
                             return result
@@ -318,13 +326,17 @@ def build_file_list(
 
 def categorize_files(
     files: list[tuple[str, int, int]],
+    raw: bool = False,
 ) -> tuple[list[tuple[str, int, int]], list[tuple[str, int, int]]]:
-    """Split file list into (new, existing) based on whether parquet files exist on disk."""
+    """Split file list into (new, existing) based on whether files exist on disk."""
     new, existing = [], []
     for entry in files:
         taxi_type, year, month = entry
-        parquet_path = Path("data") / taxi_type / f"{taxi_type}_tripdata_{year}-{month:02d}.parquet"
-        (existing if parquet_path.exists() else new).append(entry)
+        if raw:
+            file_path = Path("data") / "raw" / taxi_type / str(year) / f"{month:02d}" / f"{taxi_type}_tripdata_{year}-{month:02d}.csv.gz"
+        else:
+            file_path = Path("data") / taxi_type / f"{taxi_type}_tripdata_{year}-{month:02d}.parquet"
+        (existing if file_path.exists() else new).append(entry)
     return new, existing
 
 
@@ -370,6 +382,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Re-download and overwrite existing parquet files",
     )
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="Download raw .csv.gz files without converting to parquet or loading into DuckDB",
+    )
     return parser.parse_args()
 
 
@@ -392,7 +409,7 @@ async def main() -> None:
         return
 
     if args.dry_run:
-        new_files, existing_files = categorize_files(files_to_download)
+        new_files, existing_files = categorize_files(files_to_download, raw=args.raw)
         new_count = len(new_files)
         existing_count = len(existing_files)
         console.print(
@@ -400,7 +417,8 @@ async def main() -> None:
             f"({new_count} new, {existing_count} already exist):[/bold]"
         )
         for taxi_type, year, month in files_to_download:
-            filename = f"{taxi_type}_tripdata_{year}-{month:02d}.csv.gz"
+            ext = "csv.gz" if args.raw else "parquet"
+            filename = f"{taxi_type}_tripdata_{year}-{month:02d}.{ext}"
             if (taxi_type, year, month) in existing_files:
                 if args.force:
                     console.print(f"  [yellow]FORCE[/yellow] {filename}  (will re-download)")
@@ -414,7 +432,7 @@ async def main() -> None:
     if args.force:
         actual_downloads = files_to_download
     else:
-        new_files, existing_files = categorize_files(files_to_download)
+        new_files, existing_files = categorize_files(files_to_download, raw=args.raw)
         if existing_files:
             console.print(f"[dim]Skipping {len(existing_files)} files that already exist[/dim]")
         actual_downloads = new_files
@@ -422,11 +440,13 @@ async def main() -> None:
     if not actual_downloads:
         console.print("[green]All files already downloaded.[/green]")
     else:
-        await download_all_files(actual_downloads, force=args.force)
+        await download_all_files(actual_downloads, force=args.force, raw=args.raw)
 
-    if not args.no_load:
+    if not args.no_load and not args.raw:
         taxi_types = sorted({t for g in config["datasets"] for t in g["taxi_types"]})
         load_into_duckdb(taxi_types)
+    elif args.raw:
+        console.print("\n[dim]Skipping DuckDB load (--raw flag used)[/dim]")
 
     console.print("\n[bold green]Done![/bold green]")
 

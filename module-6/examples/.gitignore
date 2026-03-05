@@ -156,8 +156,10 @@ cython_debug/
 .DS_Store
 
 # Downloads
+data/
 *.csv
 *.parquet
+*.duckdb
 
 /.gitignore
 /notebooks/data/zones/
