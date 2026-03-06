@@ -8,27 +8,39 @@
     },
     {
       "metadata": {},
-      "name": "lpep_pickup_datetime",
+      "name": "tpep_pickup_datetime",
       "nullable": true,
       "type": "timestamp"
     },
     {
       "metadata": {},
-      "name": "lpep_dropoff_datetime",
+      "name": "tpep_dropoff_datetime",
       "nullable": true,
       "type": "timestamp"
     },
     {
       "metadata": {},
-      "name": "store_and_fwd_flag",
+      "name": "passenger_count",
       "nullable": true,
-      "type": "string"
+      "type": "integer"
+    },
+    {
+      "metadata": {},
+      "name": "trip_distance",
+      "nullable": true,
+      "type": "double"
     },
     {
       "metadata": {},
       "name": "RatecodeID",
       "nullable": true,
       "type": "integer"
+    },
+    {
+      "metadata": {},
+      "name": "store_and_fwd_flag",
+      "nullable": true,
+      "type": "string"
     },
     {
       "metadata": {},
@@ -44,15 +56,9 @@
     },
     {
       "metadata": {},
-      "name": "passenger_count",
+      "name": "payment_type",
       "nullable": true,
       "type": "integer"
-    },
-    {
-      "metadata": {},
-      "name": "trip_distance",
-      "nullable": true,
-      "type": "double"
     },
     {
       "metadata": {},
@@ -86,12 +92,6 @@
     },
     {
       "metadata": {},
-      "name": "ehail_fee",
-      "nullable": true,
-      "type": "string"
-    },
-    {
-      "metadata": {},
       "name": "improvement_surcharge",
       "nullable": true,
       "type": "double"
@@ -101,18 +101,6 @@
       "name": "total_amount",
       "nullable": true,
       "type": "double"
-    },
-    {
-      "metadata": {},
-      "name": "payment_type",
-      "nullable": true,
-      "type": "integer"
-    },
-    {
-      "metadata": {},
-      "name": "trip_type",
-      "nullable": true,
-      "type": "integer"
     },
     {
       "metadata": {},
